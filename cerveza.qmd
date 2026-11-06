@@ -1,0 +1,162 @@
+---
+title: "Análisis de componentes principales: cerveza artesanal de maíz morado y quinua"
+author: "Bryan Chavez Velaisosa"
+format:
+  html:
+    toc: true
+    toc-expand: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    self-contained: true
+    code-fold: false
+editor_options: 
+  chunk_output_type: console
+execute: 
+  warning: false
+  message: false
+  echo: true
+---
+
+# Project Setup
+
+```{r}
+#| label: setup
+
+source('https://inkaverse.com/setup.r')
+```
+
+# Data import
+
+```{r}
+gs <- "https://docs.google.com/spreadsheets/d/1nhsWjlUSZ3pRI3AxDg4MsXkxKMixxkaHPeB_lV3cG30/edit?gid=1278491723#gid=1278491723" %>% 
+  as_sheets_id()
+
+fb <- gs %>% 
+  range_read(ss = .,sheet = "cerveza") %>% 
+  mutate(across(c(1:rep), ~ as.factor(.))) 
+
+fb %>% str()
+```
+
+# Modelo
+
+$$alcohol = P + T + t + P*T + P*t + T*t + P*T*t$$
+
+```{r}
+av  <-  aov(alcohol ~ proporcion*temperatura*tiempo, fb)
+
+anova(av)
+
+mc <- emmeans(av, ~ temperatura*tiempo) %>% 
+  as.data.frame()
+
+mc
+
+plot_smr(mc
+         , type = "bar"
+         , y = "emmean"
+         , x = "temperatura"
+         , group = "tiempo")
+
+```
+
+# Multivariate
+
+```{r}
+library(factoextra)
+
+dtx <- fb %>%
+  dplyr::select(c("proporcion", "temperatura", "tiempo", "brix", "ph", "densidad", "alcohol", "acidez")) %>%
+  group_by(proporcion, temperatura, tiempo) %>% 
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>% 
+  unite("rowname", c("proporcion", "temperatura", "tiempo"), remove = F, sep = "-") %>% 
+  column_to_rownames() %>% 
+  as.data.frame()
+
+str(dtx)
+  
+mv <- dtx %>% 
+  PCA(scale.unit = T
+      , graph = F
+      , quali.sup = c(1, 2, 3))
+
+var <- mv %>% 
+  plot.PCA(choix = c("var"), cex=0.7)
+
+var
+
+cos <- mv %>% 
+  fviz_pca_var(col.var = "cos2"
+               , gradient.cols = inti:::paleta()
+               , repel = TRUE
+               , labelsize = 2)
+cos
+
+ind <- mv %>% 
+  plot.PCA(choix = c("ind")
+           , cex = 0.7
+           , label = "ind"
+           , invisible = "quali"
+           , col.hab = inti:::paleta()
+           , habillage = 3
+           )
+
+ind
+
+pcainfo <- factoextra::get_pca(mv); pcainfo
+
+pcainfo$cor %>% kable(caption = "Variable correlations")
+pcainfo$contrib %>% kable(caption = "Variable Contribution")
+pcainfo$cos2 %>% kable(caption = "Variable Cos2")
+
+psych::KMO(dtx[4:8])
+psych::cortest.bartlett(cor(dtx[4:8]), n = nrow(dtx))
+
+dimdesc(mv, axes = 1:3)
+
+cls <- mv %>% HCPC(nb.clust = 3, graph = FALSE)
+
+map <- \() {plot.HCPC(cls, choice = "map", draw.tree = FALSE)}
+
+cls$call$t$tree
+cls$data.clust %>% 
+  kable(caption = "Cluster membership of each individual")  
+cls$desc.var$quanti %>% 
+  kable(caption = "Quantitative variables characterizing each cluster")
+cls$desc.var$category%>% 
+  kable(caption = "Categorical variables significantly by cluster")  
+table(cls$data.clust$clust) %>% 
+  kable(caption = "Number of individuals assigned to each cluster")
+
+dir.create("manuscript", showWarnings = FALSE)
+
+plot <- list(var, cos, ind, map) %>% 
+  plot_grid(plotlist = ., ncol = 2, labels = "auto") %>% 
+  ggsave(plot = ., "manuscript/multivariate.jpg", units = "cm"
+                , width = 30, height = 30)
+
+plot %>% include_graphics()
+```
+
+# Interpretación 
+
+**Adecuación de los datos.** Las cinco variables casi no se correlacionan entre sí (|r| ≤ 0,30). La prueba de Bartlett no es significativa (p = 0,87) y el KMO es 0,37, menor que 0,5. Por eso el PCA resume poca información y cada dimensión explica una parte parecida de la varianza.
+
+**Varianza explicada.** Tres dimensiones tienen valor propio mayor que 1: Dim.1 (27,8 %), Dim.2 (25,1 %) y Dim.3 (22,7 %). El plano Dim1–Dim2 explica el 52,9 %, y las tres primeras el 75,6 %.
+
+**Dim.1** contrapone la acidez total (r = −0,73; contribución 38,3 %) a los °Brix (r = 0,65; 30,1 %): los tratamientos con más sólidos solubles residuales tienen menor acidez.
+
+**Dim.2** está definida por el grado alcohólico (r = 0,82; 53,2 %), asociado a la densidad (r = 0,51) y opuesto a los °Brix (r = −0,52). Es la única dimensión donde un factor es significativo: el **tiempo de tostado**. Con 105 min los tratamientos se ubican hacia más alcohol y con 125 min hacia menos (p < 0,01). Esto coincide con el ANOVA, donde el tiempo fue el efecto más fuerte sobre el alcohol.
+
+**Dim.3** está definida por el pH (r = 0,80), opuesto a la densidad (r = −0,60).
+
+**Clusters.** Con tres grupos: el cluster 1 tiene solo M40Q60-100-105, por su pH bajo (3,6); el cluster 2 agrupa principalmente los tratamientos de 125 min, con menor grado alcohólico (3,9 %); y el cluster 3 los de 105 y 115 min, con mayor grado alcohólico (5,2 %). La proporción de maltas y la temperatura no definieron ningún grupo.
+
+**Conclusión.** El tiempo de tostado es el factor que más separa los tratamientos: un tostado más corto produjo cervezas con más alcohol. Como las variables están poco correlacionadas, el PCA tiene un poder de síntesis limitado, y las diferencias deben confirmarse con el ANOVA de cada variable.
+
+
+
+# References
+
+Díaz Aranda, D. L., & Lucero Cueva, L. J. (2022). Cerveza artesanal elaborado con maíz morado (Zea mays) y quinua (Chenopodium quinoa) tipo malteado, tostados a diferentes tiempos y temperaturas [Tesis de pregrado, Universidad Nacional de Jaén]. https://repositorio.unj.edu.pe/handle/UNJ/447
